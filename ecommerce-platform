@@ -1,0 +1,212 @@
+npm install bcryptjs jsonwebtoken
+
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+
+// User schema for MongoDB
+const userSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+});
+
+// Encrypt password before saving to the database
+userSchema.pre('save', async function (next) {
+  if (!this.isModified('password')) return next();
+  this.password = await bcrypt.hash(this.password, 10);
+});
+
+// Method to compare passwords
+userSchema.methods.comparePassword = async function (password) {
+  return await bcrypt.compare(password, this.password);
+};
+
+const User = mongoose.model('User', userSchema);
+module.exports = User;
+
+const express = require('express');
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const User = require('./models/User');  // User model
+
+const app = express();
+app.use(express.json());
+
+// User Registration Route
+app.post('/register', async (req, res) => {
+  const { name, email, password } = req.body;
+
+  // Check if user already exists
+  const existingUser = await User.findOne({ email });
+  if (existingUser) {
+    return res.status(400).json({ message: 'User already exists' });
+  }
+
+  // Create new user
+  const user = new User({ name, email, password });
+  await user.save();
+
+  res.status(201).json({ message: 'User registered successfully' });
+});
+
+// User Login Route
+app.post('/login', async (req, res) => {
+  const { email, password } = req.body;
+
+  // Check if user exists
+  const user = await User.findOne({ email });
+  if (!user) {
+    return res.status(400).json({ message: 'Invalid credentials' });
+  }
+
+  // Compare password
+  const isMatch = await user.comparePassword(password);
+  if (!isMatch) {
+    return res.status(400).json({ message: 'Invalid credentials' });
+  }
+
+  // Generate JWT token
+  const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+  res.json({ token });
+});
+
+// Middleware to authenticate user
+const authenticate = (req, res, next) => {
+  const token = req.header('Authorization');
+  if (!token) return res.status(401).json({ message: 'No token, authorization denied' });
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    res.status(401).json({ message: 'Token is not valid' });
+  }
+};
+
+app.use(authenticate);  
+
+const mongoose = require('mongoose');
+
+const productSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  description: { type: String, required: true },
+  price: { type: Number, required: true },
+  image: { type: String },  // URL of the product image
+  category: { type: String, required: true },
+});
+
+const Product = mongoose.model('Product', productSchema);
+module.exports = Product;
+
+const Product = require('./models/Product');
+
+// Create Product (Admin only)
+app.post('/products', async (req, res) => {
+  const { name, description, price, image, category } = req.body;
+
+  const product = new Product({ name, description, price, image, category });
+  await product.save();
+
+  res.status(201).json({ message: 'Product added successfully', product });
+});
+
+// Get All Products
+app.get('/products', async (req, res) => {
+  const products = await Product.find();
+  res.json(products);
+});
+
+// Get Single Product
+app.get('/products/:id', async (req, res) => {
+  const product = await Product.findById(req.params.id);
+  if (!product) return res.status(404).json({ message: 'Product not found' });
+  res.json(product);
+});
+
+// Update Product (Admin only)
+app.put('/products/:id', async (req, res) => {
+  const { name, description, price, image, category } = req.body;
+
+  const product = await Product.findByIdAndUpdate(
+    req.params.id,
+    { name, description, price, image, category },
+    { new: true }
+  );
+
+  if (!product) return res.status(404).json({ message: 'Product not found' });
+
+  res.json({ message: 'Product updated successfully', product });
+});
+
+// Delete Product (Admin only)
+app.delete('/products/:id', async (req, res) => {
+  const product = await Product.findByIdAndDelete(req.params.id);
+  if (!product) return res.status(404).json({ message: 'Product not found' });
+  res.json({ message: 'Product deleted successfully' });
+});
+
+const mongoose = require('mongoose');
+
+const cartSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  products: [
+    {
+      productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
+      quantity: { type: Number, default: 1 },
+    },
+  ],
+});
+
+const Cart = mongoose.model('Cart', cartSchema);
+module.exports = Cart;
+
+const Cart = require('./models/Cart');
+
+// Add Product to Cart
+app.post('/cart', async (req, res) => {
+  const { productId, quantity } = req.body;
+  const userId = req.user.userId;
+
+  let cart = await Cart.findOne({ userId });
+  if (!cart) {
+    cart = new Cart({ userId, products: [{ productId, quantity }] });
+  } else {
+    const productIndex = cart.products.findIndex((item) => item.productId.toString() === productId);
+    if (productIndex === -1) {
+      cart.products.push({ productId, quantity });
+    } else {
+      cart.products[productIndex].quantity += quantity;
+    }
+  }
+
+  await cart.save();
+  res.json({ message: 'Product added to cart', cart });
+});
+
+// Get User Cart
+app.get('/cart', async (req, res) => {
+  const cart = await Cart.findOne({ userId: req.user.userId }).populate('products.productId');
+  res.json(cart);
+});
+
+// Remove Product from Cart
+app.delete('/cart/:productId', async (req, res) => {
+  const { productId } = req.params;
+  const userId = req.user.userId;
+
+  const cart = await Cart.findOne({ userId });
+  const productIndex = cart.products.findIndex((item) => item.productId.toString() === productId);
+
+  if (productIndex !== -1) {
+    cart.products.splice(productIndex, 1);
+    await cart.save();
+    return res.json({ message: 'Product removed from cart' });
+  }
+
+  res.status(404).json({ message: 'Product not found in cart' });
+});
+
+
